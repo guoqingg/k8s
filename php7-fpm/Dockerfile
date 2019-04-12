@@ -33,7 +33,7 @@ RUN yum -y install gcc \
 	autoconf \
      && yum clean all
 
-# 环境准备
+# 设置编译变量
 ARG VERSION="php-7.0.6"
 ARG BASEDIR="/usr/local/php7" 
 ARG CONF_DIR="/data/conf/php7"
@@ -42,7 +42,7 @@ ARG PID_DIR="/data/run"
 ARG PAG_DIR="/root/software"
 ARG SCRIPTS="/etc/init.d/php7-fpm"
 
-# copy文件
+# 放入配置文件
 COPY ./php-fpm.conf $CONF_DIR/
 COPY ./php.ini $CONF_DIR/
 COPY ./php7-fpm /etc/init.d/
