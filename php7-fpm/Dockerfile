@@ -30,9 +30,10 @@ RUN yum -y install gcc \
 	postgresql-devel \
 	make \
 	cmake \
+	autoconf \
      && yum clean all
 
-# 设置编译变量
+# 环境准备
 ARG VERSION="php-7.0.6"
 ARG BASEDIR="/usr/local/php7" 
 ARG CONF_DIR="/data/conf/php7"
@@ -41,7 +42,7 @@ ARG PID_DIR="/data/run"
 ARG PAG_DIR="/root/software"
 ARG SCRIPTS="/etc/init.d/php7-fpm"
 
-# 放入配置文件
+# copy文件
 COPY ./php-fpm.conf $CONF_DIR/
 COPY ./php.ini $CONF_DIR/
 COPY ./php7-fpm /etc/init.d/
@@ -59,7 +60,6 @@ RUN mkdir -p $LOG_DIR $CONF_DIR $PID_DIR $PAG_DIR \
 	&& make install \
 # 安装扩展模块
 	&& cd /root/software/ \
-	&& yum -y install autoconf \
 	&& wget http://pecl.php.net/get/imagick-3.4.3.tgz \
 	&& tar xf imagick-3.4.3.tgz \
 	&& cd imagick-3.4.3 \
