@@ -1,0 +1,304 @@
+系统信息
+
+```
+CentOS Linux release 7.4.1708 (Core)
+Docker版本：            18.09.6
+kubelet、kubectl、kubeadm、kubernetes版本：     1.13.5
+
+重要提示：不要使用阿里云的经典网络搭建k8s集群。会导致跨主机访问pod无法通信，具体原因没查出来。
+```
+
+安装前准备
+```
+#使Master节点可以使用root用户登录所有Node节点。
+
+#添加hosts打通各主机间主机名访问。
+10.81.57.145    K8S-TEST-MASTER01
+10.80.238.6     K8S-TEST-NODE01
+10.81.54.43     K8S-TEST-NODE02
+
+#!/bin/bash
+#关闭Selinux
+setenforce  0
+sed -i "s/^SELINUX=enforcing/SELINUX=disabled/g" /etc/sysconfig/selinux
+
+#关闭Swapp
+swapoff -a
+sed -i 's/.*swap.*/#&/' /etc/fstab
+
+#修改转发配置
+cat <<EOF >  /etc/sysctl.d/k8s.conf
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+vm.swappiness = 0
+EOF
+
+sysctl --system
+
+#关闭防火墙
+systemctl stop firewalld
+systemctl disable firewalld
+
+# 开启forward
+# Docker从1.13版本开始调整了默认的防火墙规则
+# 禁用了iptables filter表中FOWARD链
+# 这样会引起Kubernetes集群中跨Node的Pod无法通信
+ 
+iptables -P FORWARD ACCEPT
+ 
+# 加载ipvs相关内核模块，从kubernetes的1.11版默认使用ipvs，若你的系统不支持ipvs则自动降级为iptables。
+# 如果重新开机，需要重新加载
+modprobe ip_vs
+modprobe ip_vs_rr
+modprobe ip_vs_wrr
+modprobe ip_vs_sh
+modprobe nf_conntrack_ipv4
+lsmod | grep ip_vs
+```
+一、安装Docker
+
+```
+1、系统内核版本在3.8以上 （CentOS7默认3.10）
+
+2、检查Device mapper，Device mapper是Docker的存储驱动，为Docker提供存储能力。
+
+ls -l /sys/class/misc/device-mapper
+grep device-mapper /proc/devices
+
+若不存在则安装一下
+
+yum -y install device-mapper
+加载一下
+modprobe dm_mod
+
+3、Centos7安装首先去阿里云镜像站找到阿里云的docker-ce镜像。
+https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+
+wget -P /etc/yum.repos.d/ https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+yum makecache
+yum list | grep docker-ce
+yum -y install docker-ce
+
+# docker version
+Version:           18.09.6
+
+4、配置开机启动
+systemctl enable docker
+```
+
+二、安装kubelet、kubeadm、kubectl
+
+```
+1、导入kubenetes镜像源，这里使用阿里云的镜像源。
+cat > /etc/yum.repos.d/k8s.repo << EOF
+[kubernetes]
+name=Kubernetes Repo
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
+gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
+enabled=1
+EOF
+
+2、安装kubelet、kubeadm、kubectl，这里都是用1.13版本。
+yum -y install kubelet-1.13.5 kubeadm-1.13.5 kubectl-1.13.5
+
+Installed:
+  kubeadm.x86_64 0:1.13.5-0                                  kubectl.x86_64 0:1.13.5-0                                  kubelet.x86_64 0:1.13.5-0                                 
+
+Dependency Installed:
+  conntrack-tools.x86_64 0:1.4.4-4.el7            cri-tools.x86_64 0:1.12.0-0                   kubernetes-cni.x86_64 0:0.7.5-0     libnetfilter_cthelper.x86_64 0:1.0.0-9.el7    
+  libnetfilter_cttimeout.x86_64 0:1.0.0-6.el7     libnetfilter_queue.x86_64 0:1.0.2-2.el7_2     socat.x86_64 0:1.7.3.2-2.el7       
+
+Complete!
+
+# 安装时可以看出来还安装了cri-tools, kubernetes-cni, socat。
+    ● 官方从Kubernetes 1.9开始就将cni依赖升级到了0.6.0版本，在当前1.12中仍然是这个版本
+    ● socat是kubelet的依赖
+    ● cri-tools是CRI(Container Runtime Interface)容器运行时接口的命令行工具
+    
+3、配置kubelet的开机启动
+systemctl enable kubelet
+```
+三、使用kubeadm初始化kubernetes集群。
+
+```
+# kubeadm init --help
+--kubernetes-version string            Choose a specific Kubernetes version for the control plane. (default "stable-1")
+--pod-network-cidr string              Specify range of IP addresses for the pod network. If set, the control plane will automatically allocate CIDRs for every node.
+--service-cidr string                  Use alternative range of IP address for service VIPs. (default "10.96.0.0/12")
+--image-repository string              Choose a container registry to pull control plane images from (default "k8s.gcr.io")
+
+1、初始化。
+# 指定k8s版本，指定pod网络，指定service网络，指定镜像源为国内的阿里云，默认使用k8s.gcr.io，会导致拉取镜像失败。
+
+kubeadm init --kubernetes-version=v1.13.5 --pod-network-cidr=10.244.0.0/16 --service-cidr=10.96.0.0/12 --image-repository registry.cn-hangzhou.aliyuncs.com/google_containers
+
+
+###########################################################################################################################
+[init] Using Kubernetes version: v1.13.5
+[preflight] Running pre-flight checks
+	[WARNING SystemVerification]: this Docker version is not on the list of validated versions: 18.09.6. Latest validated version: 18.06
+[preflight] Pulling images required for setting up a Kubernetes cluster
+[preflight] This might take a minute or two, depending on the speed of your internet connection
+[preflight] You can also perform this action in beforehand using 'kubeadm config images pull'
+[kubelet-start] Writing kubelet environment file with flags to file "/var/lib/kubelet/kubeadm-flags.env"
+[kubelet-start] Writing kubelet configuration to file "/var/lib/kubelet/config.yaml"
+[kubelet-start] Activating the kubelet service
+[certs] Using certificateDir folder "/etc/kubernetes/pki"
+[certs] Generating "ca" certificate and key
+[certs] Generating "apiserver-kubelet-client" certificate and key
+[certs] Generating "apiserver" certificate and key
+[certs] apiserver serving cert is signed for DNS names [k8s-test-master01 kubernetes kubernetes.default kubernetes.default.svc kubernetes.default.svc.cluster.local] and IPs [10.96.0.1 47.97.50.238]
+[certs] Generating "etcd/ca" certificate and key
+[certs] Generating "etcd/server" certificate and key
+[certs] etcd/server serving cert is signed for DNS names [k8s-test-master01 localhost] and IPs [47.97.50.238 127.0.0.1 ::1]
+[certs] Generating "etcd/healthcheck-client" certificate and key
+[certs] Generating "apiserver-etcd-client" certificate and key
+[certs] Generating "etcd/peer" certificate and key
+[certs] etcd/peer serving cert is signed for DNS names [k8s-test-master01 localhost] and IPs [47.97.50.238 127.0.0.1 ::1]
+[certs] Generating "front-proxy-ca" certificate and key
+[certs] Generating "front-proxy-client" certificate and key
+[certs] Generating "sa" key and public key
+[kubeconfig] Using kubeconfig folder "/etc/kubernetes"
+[kubeconfig] Writing "admin.conf" kubeconfig file
+[kubeconfig] Writing "kubelet.conf" kubeconfig file
+[kubeconfig] Writing "controller-manager.conf" kubeconfig file
+[kubeconfig] Writing "scheduler.conf" kubeconfig file
+[control-plane] Using manifest folder "/etc/kubernetes/manifests"
+[control-plane] Creating static Pod manifest for "kube-apiserver"
+[control-plane] Creating static Pod manifest for "kube-controller-manager"
+[control-plane] Creating static Pod manifest for "kube-scheduler"
+[etcd] Creating static Pod manifest for local etcd in "/etc/kubernetes/manifests"
+[wait-control-plane] Waiting for the kubelet to boot up the control plane as static Pods from directory "/etc/kubernetes/manifests". This can take up to 4m0s
+[apiclient] All control plane components are healthy after 28.002251 seconds
+[uploadconfig] storing the configuration used in ConfigMap "kubeadm-config" in the "kube-system" Namespace
+[kubelet] Creating a ConfigMap "kubelet-config-1.13" in namespace kube-system with the configuration for the kubelets in the cluster
+[patchnode] Uploading the CRI Socket information "/var/run/dockershim.sock" to the Node API object "k8s-test-master01" as an annotation
+[mark-control-plane] Marking the node k8s-test-master01 as control-plane by adding the label "node-role.kubernetes.io/master=''"
+[mark-control-plane] Marking the node k8s-test-master01 as control-plane by adding the taints [node-role.kubernetes.io/master:NoSchedule]
+[bootstrap-token] Using token: 95mvgm.nuka4bikmf063440
+[bootstrap-token] Configuring bootstrap tokens, cluster-info ConfigMap, RBAC Roles
+[bootstraptoken] configured RBAC rules to allow Node Bootstrap tokens to post CSRs in order for nodes to get long term certificate credentials
+[bootstraptoken] configured RBAC rules to allow the csrapprover controller automatically approve CSRs from a Node Bootstrap Token
+[bootstraptoken] configured RBAC rules to allow certificate rotation for all node client certificates in the cluster
+[bootstraptoken] creating the "cluster-info" ConfigMap in the "kube-public" namespace
+[addons] Applied essential addon: CoreDNS
+[addons] Applied essential addon: kube-proxy
+
+
+Your Kubernetes master has initialized successfully!
+
+To start using your cluster, you need to run the following as a regular user:
+
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
+
+You can now join any number of machines by running the following on each node
+as root:
+
+  kubeadm join 47.97.50.238:6443 --token 95mvgm.nuka4bikmf063440 --discovery-token-ca-cert-hash sha256:f05ef92d45e05184f79090e9101d2d2d3ffd686d99b872d271679b6b295a189a
+###########################################################################################################################
+
+#初始化的输出内容基本可以看出手动初始化一个kubernetes集群所需要的操作。其中有以下关键内容：
+    ● [kubelet-start] 生成kubelet的配置文件/var/lib/kubelet/config.yaml
+    ● [certificates]生成相关的各种证书  
+    ● [kubeconfig]生成相关的kubeconfig文件
+    ● [bootstraptoken]生成token记录下来，后边使用kubeadm join往集群中添加节点时会用到
+    ● 下面的命令是配置常规用户如何使用kubectl访问集群：
+          mkdir -p $HOME/.kube
+          sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+          sudo chown $(id -u):$(id -g) $HOME/.kube/config   
+    ● 最后给出了将节点加入集群的命令：  kubeadm join 47.97.50.238:6443 --token 95mvgm.nuka4bikmf063440 --discovery-token-ca-cert-hash sha256:f05ef92d45e05184f79090e9101d2d2d3ffd686d99b872d271679b6b295a189a
+```
+四、部署网络组件flannel
+
+```
+# 部署的信息都在github有
+# https://github.com/coreos/flannel
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+# 验证一下，首先验证一下镜像是否下下来了。
+docker images
+...
+quay.io/coreos/flannel                                                        v0.11.0-amd64       ff281650a721        3 months ago        52.6MB
+
+# 获取我们有哪些名称空间
+# kubectl get ns
+NAME          STATUS   AGE
+default       Active   75m
+kube-public   Active   75m
+kube-system   Active   75m
+
+# flannel默认是运行在kube-system下的。看一下pod是否已经运行了。
+# kubectl get pods -n kube-system
+NAME                                        READY   STATUS    RESTARTS   AGE
+coredns-89cc84847-bmwq8                     1/1     Running   0          67m
+coredns-89cc84847-x58df                     1/1     Running   0          67m
+etcd-k8s-test-master01                      1/1     Running   0          67m
+kube-apiserver-k8s-test-master01            1/1     Running   0          67m
+kube-controller-manager-k8s-test-master01   1/1     Running   0          67m
+kube-flannel-ds-amd64-ff86j                 1/1     Running   0          6m19s
+kube-proxy-jfdl6                            1/1     Running   0          67m
+kube-scheduler-k8s-test-master01            1/1     Running   0          67m
+```
+五、Cluster节点加入Master。
+
+```
+# 与Master一样，安装Docker、kubelet、kubectl、kubeadm。Docker和kubelet设置为开机自启动。
+
+kubeadm join 47.97.50.238:6443 --token 95mvgm.nuka4bikmf063440 --discovery-token-ca-cert-hash sha256:f05ef92d45e05184f79090e9101d2d2d3ffd686d99b872d271679b6b295a189a
+
+###########################################################################################################################
+[preflight] Running pre-flight checks
+	[WARNING SystemVerification]: this Docker version is not on the list of validated versions: 18.09.6. Latest validated version: 18.06
+[discovery] Trying to connect to API Server "47.97.50.238:6443"
+[discovery] Created cluster-info discovery client, requesting info from "https://47.97.50.238:6443"
+[discovery] Requesting info from "https://47.97.50.238:6443" again to validate TLS against the pinned public key
+[discovery] Cluster info signature and contents are valid and TLS certificate validates against pinned roots, will use API Server "47.97.50.238:6443"
+[discovery] Successfully established connection with API Server "47.97.50.238:6443"
+[join] Reading configuration from the cluster...
+[join] FYI: You can look at this config file with 'kubectl -n kube-system get cm kubeadm-config -oyaml'
+[kubelet] Downloading configuration for the kubelet from the "kubelet-config-1.13" ConfigMap in the kube-system namespace
+[kubelet-start] Writing kubelet configuration to file "/var/lib/kubelet/config.yaml"
+[kubelet-start] Writing kubelet environment file with flags to file "/var/lib/kubelet/kubeadm-flags.env"
+[kubelet-start] Activating the kubelet service
+[tlsbootstrap] Waiting for the kubelet to perform the TLS Bootstrap...
+[patchnode] Uploading the CRI Socket information "/var/run/dockershim.sock" to the Node API object "k8s-test-node01" as an annotation
+
+This node has joined the cluster:
+* Certificate signing request was sent to apiserver and a response was received.
+* The Kubelet was informed of the new secure connection details.
+
+Run 'kubectl get nodes' on the master to see this node join the cluster.
+############################################################################################################################
+
+# 提示了在Master节点运行kubectl get nodes查看这个Cluster加入状态。
+
+# kubectl get nodes
+NAME                STATUS   ROLES    AGE   VERSION
+k8s-test-master01   Ready    master   17h   v1.13.5
+k8s-test-node01     Ready    <none>   10m   v1.13.5
+
+# 可以看到node1已经加入了，但是这个过程可能需要等待几分钟，期间node1的状态为NotReady。
+
+# 再看一下pod的状态，可以看到kube-proxy和flannel的pod都已经分别在master上和node1上运行。
+# kubectl get pods -n kube-system -o wide
+NAME                                        READY   STATUS    RESTARTS   AGE   IP             NODE                NOMINATED NODE   READINESS GATES
+coredns-89cc84847-bmwq8                     1/1     Running   0          17h   10.244.0.3     k8s-test-master01   <none>           <none>
+coredns-89cc84847-x58df                     1/1     Running   0          17h   10.244.0.2     k8s-test-master01   <none>           <none>
+etcd-k8s-test-master01                      1/1     Running   0          17h   10.81.57.145   k8s-test-master01   <none>           <none>
+kube-apiserver-k8s-test-master01            1/1     Running   0          17h   10.81.57.145   k8s-test-master01   <none>           <none>
+kube-controller-manager-k8s-test-master01   1/1     Running   0          17h   10.81.57.145   k8s-test-master01   <none>           <none>
+kube-flannel-ds-amd64-ff86j                 1/1     Running   0          16h   10.81.57.145   k8s-test-master01   <none>           <none>
+kube-flannel-ds-amd64-v56lq                 1/1     Running   0          12m   10.80.238.6    k8s-test-node01     <none>           <none>
+kube-proxy-hr594                            1/1     Running   0          12m   10.80.238.6    k8s-test-node01     <none>           <none>
+kube-proxy-jfdl6                            1/1     Running   0          17h   10.81.57.145   k8s-test-master01   <none>           <none>
+kube-scheduler-k8s-test-master01            1/1     Running   0          17h   10.81.57.145   k8s-test-master01   <none>           <none>
+
+```
