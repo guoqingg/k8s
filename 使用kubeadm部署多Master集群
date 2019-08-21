@@ -1,0 +1,475 @@
+### 系统信息
+```
+CentOS Linux release 7.4.1708 (Core)
+Docker版本：            18.06.3-ce
+kubelet、kubectl、kubeadm、kubernetes版本：     1.14.5
+
+重要提示：不要使用阿里云的经典网络搭建k8s集群。会导致跨主机访问pod无法通信，具体原因没查出来。
+```
+### 安装前准备，在所有节点执行。
+```
+#使Master节点可以使用root用户登录所有Node节点。
+
+#在各节点上添加hosts
+# kubernetes cluster
+172.16.17.191   HUOBAN-K8S-MASTER01  master01
+172.16.17.193   HUOBAN-K8S-MASTER02  master02
+172.16.17.192   HUOBAN-K8S-MASTER03  master03
+172.16.17.194   HUOBAN-K8S-NODE01    node01
+172.16.17.195   HUOBAN-K8S-NODE02    node02
+172.16.17.196   HUOBAN-K8S-NODE03    node03
+
+
+#关闭Selinux
+setenforce  0
+sed -i "s/^SELINUX=enforcing/SELINUX=disabled/g" /etc/sysconfig/selinux
+
+#关闭Swapp
+swapoff -a
+sed -i 's/.*swap.*/#&/' /etc/fstab
+
+#修改转发配置
+cat <<EOF >  /etc/sysctl.d/k8s.conf
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+vm.swappiness = 0
+EOF
+
+sysctl --system
+
+#关闭防火墙
+systemctl stop firewalld
+systemctl disable firewalld
+
+# 开启forward
+# Docker从1.13版本开始调整了默认的防火墙规则
+# 禁用了iptables filter表中FOWARD链
+# 这样会引起Kubernetes集群中跨Node的Pod无法通信
+ 
+iptables -P FORWARD ACCEPT
+ 
+# 加载ipvs相关内核模块，从kubernetes的1.11版默认使用ipvs，若你的系统不支持ipvs则自动降级为iptables。
+# 如果重新开机，需要重新加载
+modprobe ip_vs
+modprobe ip_vs_rr
+modprobe ip_vs_wrr
+modprobe ip_vs_sh
+modprobe nf_conntrack_ipv4
+lsmod | grep ip_vs
+```
+
+### 一、在所有节点上安装Docker
+```
+1、系统内核版本在3.8以上 （CentOS7默认3.10）
+
+2、检查Device mapper，Device mapper是Docker的一种存储驱动，为Docker提供存储能力。较新的docker版本默认都使用overlay2的存储驱动了，所以这一步可做可不做。
+
+# 有兴趣可以看一下docker的各存储驱动的应用场景。https://www.cnblogs.com/breezey/p/9589288.html
+
+ls -l /sys/class/misc/device-mapper
+grep device-mapper /proc/devices
+
+若不存在则安装一下
+
+yum -y install device-mapper
+加载一下
+modprobe dm_mod
+
+3、通常我们不会安装最新版的docker，kubeadm对docker版本有硬限制。
+docker镜像源文件：    https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+docker版本库：        https://mirrors.aliyun.com/docker-ce/linux/centos/7/x86_64/stable/Packages/
+
+wget -P /etc/yum.repos.d/ https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+yum makecache
+yum -y install https://mirrors.aliyun.com/docker-ce/linux/centos/7/x86_64/stable/Packages/docker-ce-18.03.1.ce-1.el7.centos.x86_64.rpm
+
+4、配置开机启动
+systemctl start docker
+systemctl enable docker
+```
+
+### 二、在所有节点上安装kubelet、kubeadm、kubectl。
+```
+1、导入kubenetes镜像源，这里使用阿里云的镜像源。
+cat > /etc/yum.repos.d/k8s.repo << EOF
+[kubernetes]
+name=Kubernetes Repo
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
+gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
+enabled=1
+EOF
+
+2、安装kubelet、kubeadm、kubectl，这里都是用1.14.5版本。
+
+yum -y install kubectl-1.14.5 kubeadm-1.14.5 kubelet-1.14.5
+
+#######################################################################################
+Installed:
+  kubeadm.x86_64 0:1.14.5-0                            kubectl.x86_64 0:1.14.5-0                            kubelet.x86_64 0:1.14.5-0                           
+
+Dependency Installed:
+  kubernetes-cni.x86_64 0:0.7.5-0                       
+
+3、编译替换kubeadm使其生成的CA证书有效期年限为100年。
+在https://github.com/kubernetes/kubernetes/releases中找到自己安装的kubernetes版本的tag,下载下来。
+
+wget https://github.com/kubernetes/kubernetes/archive/v1.14.5.tar.gz
+
+# 修改下面2个文件使其证书有效期变为100年，这块我反正是失败了。。。自己去找办法吧。
+./kubernetes/staging/src/k8s.io/client-go/util/cert/cert.go
+    NotAfter:              now.Add(duration365d * 100).UTC(),
+./kubernetes/cmd/kubeadm/app/util/pkiutil/pki_helpers.go
+     NotAfter:     time.Now().Add(duration365d * 100).UTC(),   #改成100年
+
+4、想办法整一个go环境去编译它，我是在服务器上搞了个go的镜像去编译，把你下载的代码目录挂载到镜像里面。
+docker pull icyboy/k8s_build:v1.14.1
+docker run --rm -v /root/kubernetes（你自己的代码路径）:/go/src/k8s.io/kubernetes -it icyboy/k8s_build:v1.14.1 bash
+# cd go/src/k8s.io/kubernetes
+# make all WHAT=cmd/kubeadm GOFLAGS=-v\
+
+#编译完产物在 ./kubernetes/_output/local/bin/linux/amd64 目录下,copy出来替换你yum安装的kubeadm。
+cp /root/kubernetes/_output/local/bin/linux/amd64 /usr/bin
+
+5、将kubectl加入开机启动项
+systemctl enable kubelet
+```
+
+### 三、创建一个VIP
+
+```
+多master集群需要一个VIP来给所有master节点代理6443端口，6443是https协议。
+
+如果你是阿里云就去创建一个SLB，把6443端口转发到所有master节点的6443端口。这里一定不要使用内网的SLB！！用公网！！！如果你想挑战一下自己可以尝试一下。
+
+如果你是自己的机房，考虑一下haproxy+hearbeat吧。。。
+```
+
+### 四、开始初始化你的第一个master节点吧。  
+```
+1、使用kubeadm-config.yaml配置k8s
+
+cat > kubeadm-master.config <<EOF
+apiVersion: kubeadm.k8s.io/v1beta1
+kind: ClusterConfiguration
+# kubernetes版本
+kubernetesVersion: v1.14.5
+# 使用国内阿里镜像
+imageRepository: registry.cn-hangzhou.aliyuncs.com/google_containers
+
+apiServer:
+  certSANs:
+  # 你的VIP地址
+  - "121.43.14.225"
+# 你的VIP地址及https端口
+controlPlaneEndpoint: "121.43.14.225:6443"
+
+networking:
+  podSubnet: 10.244.0.0/16
+EOF
+
+2、初始化你的第一个master节点
+kubeadm init --config=kubeadm-master.config
+
+[init] Using Kubernetes version: v1.14.5
+[preflight] Running pre-flight checks
+	[WARNING IsDockerSystemdCheck]: detected "cgroupfs" as the Docker cgroup driver. The recommended driver is "systemd". Please follow the guide at https://kubernetes.io/docs/setup/cri/
+[preflight] Pulling images required for setting up a Kubernetes cluster
+[preflight] This might take a minute or two, depending on the speed of your internet connection
+[preflight] You can also perform this action in beforehand using 'kubeadm config images pull'
+[kubelet-start] Writing kubelet environment file with flags to file "/var/lib/kubelet/kubeadm-flags.env"
+[kubelet-start] Writing kubelet configuration to file "/var/lib/kubelet/config.yaml"
+[kubelet-start] Activating the kubelet service
+[certs] Using certificateDir folder "/etc/kubernetes/pki"
+[certs] Generating "etcd/ca" certificate and key
+[certs] Generating "apiserver-etcd-client" certificate and key
+[certs] Generating "etcd/server" certificate and key
+[certs] etcd/server serving cert is signed for DNS names [huoban-k8s-master01 localhost] and IPs [172.16.17.191 127.0.0.1 ::1]
+[certs] Generating "etcd/healthcheck-client" certificate and key
+[certs] Generating "etcd/peer" certificate and key
+[certs] etcd/peer serving cert is signed for DNS names [huoban-k8s-master01 localhost] and IPs [172.16.17.191 127.0.0.1 ::1]
+[certs] Generating "ca" certificate and key
+[certs] Generating "apiserver" certificate and key
+[certs] apiserver serving cert is signed for DNS names [huoban-k8s-master01 kubernetes kubernetes.default kubernetes.default.svc kubernetes.default.svc.cluster.local] and IPs [10.96.0.1 172.16.17.191 121.43.14.225 121.43.14.225]
+[certs] Generating "apiserver-kubelet-client" certificate and key
+[certs] Generating "front-proxy-ca" certificate and key
+[certs] Generating "front-proxy-client" certificate and key
+[certs] Generating "sa" key and public key
+[kubeconfig] Using kubeconfig folder "/etc/kubernetes"
+[kubeconfig] Writing "admin.conf" kubeconfig file
+[kubeconfig] Writing "kubelet.conf" kubeconfig file
+[kubeconfig] Writing "controller-manager.conf" kubeconfig file
+[kubeconfig] Writing "scheduler.conf" kubeconfig file
+[control-plane] Using manifest folder "/etc/kubernetes/manifests"
+[control-plane] Creating static Pod manifest for "kube-apiserver"
+[control-plane] Creating static Pod manifest for "kube-controller-manager"
+[control-plane] Creating static Pod manifest for "kube-scheduler"
+[etcd] Creating static Pod manifest for local etcd in "/etc/kubernetes/manifests"
+[wait-control-plane] Waiting for the kubelet to boot up the control plane as static Pods from directory "/etc/kubernetes/manifests". This can take up to 4m0s
+[apiclient] All control plane components are healthy after 19.007124 seconds
+[upload-config] storing the configuration used in ConfigMap "kubeadm-config" in the "kube-system" Namespace
+[kubelet] Creating a ConfigMap "kubelet-config-1.14" in namespace kube-system with the configuration for the kubelets in the cluster
+[upload-certs] Skipping phase. Please see --experimental-upload-certs
+[mark-control-plane] Marking the node huoban-k8s-master01 as control-plane by adding the label "node-role.kubernetes.io/master=''"
+[mark-control-plane] Marking the node huoban-k8s-master01 as control-plane by adding the taints [node-role.kubernetes.io/master:NoSchedule]
+[bootstrap-token] Using token: qkqiti.h8kmmalkmb25ic6s
+[bootstrap-token] Configuring bootstrap tokens, cluster-info ConfigMap, RBAC Roles
+[bootstrap-token] configured RBAC rules to allow Node Bootstrap tokens to post CSRs in order for nodes to get long term certificate credentials
+[bootstrap-token] configured RBAC rules to allow the csrapprover controller automatically approve CSRs from a Node Bootstrap Token
+[bootstrap-token] configured RBAC rules to allow certificate rotation for all node client certificates in the cluster
+[bootstrap-token] creating the "cluster-info" ConfigMap in the "kube-public" namespace
+[addons] Applied essential addon: CoreDNS
+[addons] Applied essential addon: kube-proxy
+
+Your Kubernetes control-plane has initialized successfully!
+
+To start using your cluster, you need to run the following as a regular user:
+
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
+
+You can now join any number of control-plane nodes by copying certificate authorities 
+and service account keys on each node and then running the following as root:
+
+  kubeadm join 121.43.14.225:6443 --token np0shg.ljfpezwzkxitqzah \
+    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d854b8d9bc5ae6d2a72b7b6f311b64c3 \
+    --experimental-control-plane 	  
+
+Then you can join any number of worker nodes by running the following on each as root:
+
+kubeadm join 121.43.14.225:6443 --token np0shg.ljfpezwzkxitqzah \
+    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d854b8d9bc5ae6d2a72b7b6f311b64c3 
+    
+# 记得保存好这两条信息，这是你master节点和node加入集群的凭证。
+
+# 执行这个让你的当前节点拥有kubectl的执行权限。
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+### 五、验证你的证书是否是100年有效期，这一步非常重要！
+
+```
+# 这一步非常重要所以我单独拿出来写。
+
+# for crt in $(find /etc/kubernetes/pki/ -name "*.crt"); do openssl x509 -in $crt -noout -dates; done
+
+notBefore=Aug 20 07:43:46 2019 GMT
+notAfter=Jul 27 07:43:46 2119 GMT
+notBefore=Aug 20 07:43:45 2019 GMT
+notAfter=Jul 27 07:43:45 2119 GMT
+notBefore=Aug 20 07:43:46 2019 GMT
+notAfter=Jul 27 07:43:47 2119 GMT
+notBefore=Aug 20 07:43:46 2019 GMT
+notAfter=Jul 27 07:43:47 2119 GMT
+notBefore=Aug 20 07:43:46 2019 GMT
+notAfter=Jul 27 07:43:47 2119 GMT
+notBefore=Aug 20 07:43:46 2019 GMT
+notAfter=Jul 27 07:43:46 2119 GMT
+notBefore=Aug 20 07:43:45 2019 GMT
+notAfter=Jul 27 07:43:46 2119 GMT
+notBefore=Aug 20 07:43:45 2019 GMT
+notAfter=Jul 27 07:43:45 2119 GMT
+notBefore=Aug 20 07:43:45 2019 GMT
+notAfter=Jul 27 07:43:45 2119 GMT
+notBefore=Aug 20 07:43:45 2019 GMT
+notAfter=Jul 27 07:43:45 2119 GMT
+
+# notBefore代表生效时间，notAfter代表失效时间。
+```
+
+### 六、让其他节点加入集群吧。
+```
+1、拷贝master证书到其他节点，记得打通root的连接权限。
+cat > scp.sh << EOF
+USER=root
+CONTROL_PLANE_IPS="HUOBAN-K8S-MASTER02 HUOBAN-K8S-MASTER03"
+for host in ${CONTROL_PLANE_IPS}; do
+    ssh "${USER}"@$host "mkdir -p /etc/kubernetes/pki/etcd"
+    scp /etc/kubernetes/pki/ca.* "${USER}"@$host:/etc/kubernetes/pki/
+    scp /etc/kubernetes/pki/sa.* "${USER}"@$host:/etc/kubernetes/pki/
+    scp /etc/kubernetes/pki/front-proxy-ca.* "${USER}"@$host:/etc/kubernetes/pki/
+    scp /etc/kubernetes/pki/etcd/ca.* "${USER}"@$host:/etc/kubernetes/pki/etcd/
+    scp /etc/kubernetes/admin.conf "${USER}"@$host:/etc/kubernetes/
+done
+EOF
+
+2、让你的其他master节点加入集群吧。在其他master节点执行：
+kubeadm join 121.43.14.225:6443 --token np0shg.ljfpezwzkxitqzah \
+    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d854b8d9bc5ae6d2a72b7b6f311b64c3 \
+    --experimental-control-plane
+
+3、让你的其他node节点加入集群。在其他的node节点执行：
+kubeadm join 121.43.14.225:6443 --token np0shg.ljfpezwzkxitqzah \
+    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d854b8d9bc5ae6d2a72b7b6f311b64c3 
+
+4、不用执行kubectl get nodes，肯定是NotReady，因为你没有安装网络插件。
+
+5、安装flannel网络插件。
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+# 如果你的pod卡主了，多半是废了，把文件wget下来替换镜像源吧。
+
+6、查看你的pod状态，如果正常等一两分钟各节点应该就会Ready了。
+# kubectl get pod -n kube-system
+# kubectl get nodes
+```
+
+### 七、安装仪表盘插件。
+
+```
+1、把文件下下来修改镜像源地址。还要把service改成NodePort类型，端口改为30001供外部访问。f**k防火墙。
+wget https://raw.githubusercontent.com/kubernetes/dashboard/master/src/deploy/recommended/kubernetes-dashboard.yaml
+
+# vim kubernetes-dashboard.yaml
+109     spec:
+110       containers:
+111       - name: kubernetes-dashboard
+112         image: registry.cn-hangzhou.aliyuncs.com/google_containers/kubernetes-dashboard-amd64:v1.10.1
+---
+150 kind: Service
+151 apiVersion: v1
+152 metadata:
+153   labels:
+154     k8s-app: kubernetes-dashboard
+155   name: kubernetes-dashboard
+156   namespace: kube-system
+157 spec:
+158   type: NodePort
+159   ports:
+160     - port: 443
+161       targetPort: 8443
+162       nodePort: 30001
+163   selector:
+164     k8s-app: kubernetes-dashboard
+
+
+2、创建pod
+kubectl create -f kubernetes-dashboard.yaml
+
+3、检查一下，如果有问题自己去查pod日志。
+# kubectl get pods -n kube-system -o wide | grep dashboard
+kubernetes-dashboard-5d9599dc98-6r76h         1/1     Running   0          71m   10.244.3.64     huoban-k8s-node02     <none>           <none>
+
+4、创建一个管理员用户
+cat > kubernetes-dashboard-rbac.yaml << EOF
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: admin
+  annotations:
+    rbac.authorization.kubernetes.io/autoupdate: "true"
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: admin
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin
+  namespace: kube-system
+  labels:
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+EOF
+
+# 创建用户
+kubectl create -f kubernetes-dashboard-rbac.yaml
+
+5、访问仪表盘。随便访问一个node的30001端口。有兴趣可以自己搞一个slb去访问。谷歌浏览器访问有问题，我用的火狐。
+# 选择令牌访问，至于你的令牌是什么，就是如下。没法贴图，没有会员。若意打赏联系作者。V❤：红红火火。
+
+kubectl get secret -n kube-system | grep admin-token
+admin-token-rpwqm（你的secret）                                kubernetes.io/service-account-token   3      79m
+
+
+kubectl describe secret -n kube-system admin-token-rpwqm
+Name:         admin-token-rpwqm
+Namespace:    kube-system
+Labels:       <none>
+Annotations:  kubernetes.io/service-account.name: admin
+              kubernetes.io/service-account.uid: 872ec6f7-c321-11e9-b364-00163e0ffe01
+
+Type:  kubernetes.io/service-account-token
+
+Data
+====
+ca.crt:     1029 bytes
+namespace:  11 bytes
+token:      eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9.eyJpc3MiOiJrdWJlcm5ldGVzL3NlcnZpY2VhY2NvdW50Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9uYW1lc3BhY2UiOiJrdWJlLXN5c3RlbSIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VjcmV0Lm5hbWUiOiJhZG1pbi10b2tlbi1ycHdxbSIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50Lm5hbWUiOiJhZG1pbiIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50LnVpZCI6Ijg3MmVjNmY3LWMzMjEtMTFlOS1iMzY0LTAwMTYzZTBmZmUwMSIsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDprdWJlLXN5c3RlbTphZG1pbiJ9.ao1IWuzW8AM0UiGN34_tQiUfc38UuKqeyZr9uf1jtLdXwjD3J7J3OJCNfc1LfNszFllVrDk5xYsWMDOpmSrmr9_L6Lfmu8JM91iqu-zEJXQ9sq7Zx2g0mDXt2vmRIqEdu8BMFRxj6aXqoOMEns12v83PsyOJ-4TLyNnpMUFZhSR6Tk-El2vNhNol20I2aJDAs8p6OOVIhVdHQWhNsPwqPZ0YlPOmcr0wqrz0d5Wb7scTc_l4LlhjA0dBj19u9ckXWExP4c1lr169RynJyQFqAejNN0_ohY3QzKhZabpMKBOWiI0lC7Cff10-jb5XJheMj_aOTgJA19LUOrxWS_dOhA      （你的令牌token串）
+```
+
+### 八、安装metrics-server插件。
+
+```
+1、先把文件都下载下来。
+mkdir ./metrics-server
+cd metrics-server/
+for file in aggregated-metrics-reader.yaml auth-delegator.yaml auth-reader.yaml metrics-apiservice.yaml metrics-server-deployment.yaml metrics-server-service.yaml resource-reader.yaml; do  wget https://raw.githubusercontent.com/kubernetes-incubator/metrics-server/master/deploy/1.8%2B/$file;done
+
+2、这里需要改2个地方，一个是镜像的问题，一个是服务启动的问题。
+
+# 在所有Node节点上执行。先把镜像国通阿里云的镜像源下载下来。再改个名字。
+docker pull registry.cn-hangzhou.aliyuncs.com/google_containers/metrics-server-amd64:v0.3.3
+docker tag registry.cn-hangzhou.aliyuncs.com/google_containers/metrics-server-amd64:v0.3.3 k8s.gcr.io/metrics-server-amd64:v0.3.3
+
+# 修改metrics-server-deployment.yaml，增加一个imagePullPolicy，增加command内容，否则会报错no metrics known for node。相关问题原因自行百度。
+# vim metrics-server-deployment.yaml
+ 30       containers:
+ 31       - name: metrics-server
+ 32         image: k8s.gcr.io/metrics-server-amd64:v0.3.3
+ 33         imagePullPolicy: IfNotPresent
+ 34         command:
+ 35           - /metrics-server
+ 36           - --kubelet-preferred-address-types=InternalDNS,InternalIP,ExternalDNS,ExternalIP,Hostname
+ 37           - --kubelet-insecure-tls
+ 38         volumeMounts:
+ 39         - name: tmp-dir
+ 40           mountPath: /tmp
+ 
+# kubectl apply -f ./
+clusterrole.rbac.authorization.k8s.io/system:aggregated-metrics-reader created
+clusterrolebinding.rbac.authorization.k8s.io/metrics-server:system:auth-delegator created
+rolebinding.rbac.authorization.k8s.io/metrics-server-auth-reader created
+apiservice.apiregistration.k8s.io/v1beta1.metrics.k8s.io created
+serviceaccount/metrics-server created
+deployment.extensions/metrics-server created
+service/metrics-server created
+clusterrole.rbac.authorization.k8s.io/system:metrics-server created
+clusterrolebinding.rbac.authorization.k8s.io/system:metrics-server created
+
+# 查看pod状态
+metrics-server-55898485b6-pdhnz               1/1     Running   0          93m    10.244.4.2      huoban-k8s-node01     <none>           <none>
+
+# 一定要等几分钟，否则会报错的！
+kubectl top node
+NAME                  CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%   
+huoban-k8s-master01   72m          3%     612Mi           16%       
+huoban-k8s-master02   93m          4%     713Mi           19%       
+huoban-k8s-master03   108m         5%     674Mi           18%       
+huoban-k8s-node01     26m          1%     334Mi           9%        
+huoban-k8s-node02     26m          1%     339Mi           9%        
+huoban-k8s-node03     25m          1%     316Mi           8%     
+```
+
+### 九、部署Ingress-Nginx插件
+
+```
+# github文档地址
+https://github.com/kubernetes/ingress-nginx/blob/master/docs/deploy/index.md
+
+# 部署命令，有问题多半还是镜像的问题，把文件下载下来然后改吧改吧镜像地址那一套。
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/static/mandatory.yaml
+```
+
