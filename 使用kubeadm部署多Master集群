@@ -238,13 +238,13 @@ You can now join any number of control-plane nodes by copying certificate author
 and service account keys on each node and then running the following as root:
 
   kubeadm join 121.43.14.225:6443 --token np0shg.ljfpezwzkxitqzah \
-    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d854b8d9bc5ae6d2a72b7b6f311b64c3 \
+    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2dc5ae6d2a72b7b6f311b64c3 \
     --experimental-control-plane 	  
 
 Then you can join any number of worker nodes by running the following on each as root:
 
 kubeadm join 121.43.14.225:6443 --token np0shg.ljfpezwzkxitqzah \
-    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d854b8d9bc5ae6d2a72b7b6f311b64c3 
+    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2dc5ae6d2a72b7b6f311b64c3 
     
 # 记得保存好这两条信息，这是你master节点和node加入集群的凭证。
 
@@ -302,12 +302,12 @@ EOF
 
 2、让你的其他master节点加入集群吧。在其他master节点执行：
 kubeadm join 121.43.14.225:6443 --token np0shg.ljfpezwzkxitqzah \
-    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d854b8d9bc5ae6d2a72b7b6f311b64c3 \
+    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d85472b7b6f311b64c3 \
     --experimental-control-plane
 
 3、让你的其他node节点加入集群。在其他的node节点执行：
 kubeadm join 121.43.14.225:6443 --token np0shg.ljfpezwzkxitqzah \
-    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d854b8d9bc5ae6d2a72b7b6f311b64c3 
+    --discovery-token-ca-cert-hash sha256:01b2bb52624e5a5038229de66c59fdc2d85472b7b6f311b64c3 
 
 4、不用执行kubectl get nodes，肯定是NotReady，因为你没有安装网络插件。
 
@@ -407,7 +407,7 @@ Data
 ====
 ca.crt:     1029 bytes
 namespace:  11 bytes
-token:      eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9.eyJpc3MiOiJrdWJlcm5ldGVzL3NlcnZpY2VhY2NvdW50Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9uYW1lc3BhY2UiOiJrdWJlLXN5c3RlbSIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VjcmV0Lm5hbWUiOiJhZG1pbi10b2tlbi1ycHdxbSIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50Lm5hbWUiOiJhZG1pbiIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50LnVpZCI6Ijg3MmVjNmY3LWMzMjEtMTFlOS1iMzY0LTAwMTYzZTBmZmUwMSIsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDprdWJlLXN5c3RlbTphZG1pbiJ9.ao1IWuzW8AM0UiGN34_tQiUfc38UuKqeyZr9uf1jtLdXwjD3J7J3OJCNfc1LfNszFllVrDk5xYsWMDOpmSrmr9_L6Lfmu8JM91iqu-zEJXQ9sq7Zx2g0mDXt2vmRIqEdu8BMFRxj6aXqoOMEns12v83PsyOJ-4TLyNnpMUFZhSR6Tk-El2vNhNol20I2aJDAs8p6OOVIhVdHQWhNsPwqPZ0YlPOmcr0wqrz0d5Wb7scTc_l4LlhjA0dBj19u9ckXWExP4c1lr169RynJyQFqAejNN0_ohY3QzKhZabpMKBOWiI0lC7Cff10-jb5XJheMj_aOTgJA19LUOrxWS_dOhA      （你的令牌token串）
+token:      eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9.eyJpc3MiOuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9uYW1lc3BhY2UiOiJrdWJlLXN5c3RlbSIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VjcmV0Lm5hbWUiOiJhZG1pbi10b2tlbi1ycHdxbSIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50Lm5hbWUiOiJhZG1pbiIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50LnVpZCI6Ijg3MmVjNmY3LWMzMjEtMTFlOS1iMzY0LTAwMTYzZTBmZmUwMSIsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDprdWJlLXN5c3RlbTphZG1pbiJ9.ao1IWuzW8AM0UiGN34_tQiUfc38UuKqeyZr9uf1jtLdXwjD3J7J3OJCNfc1LfNszFllVrDk5xYsWMDOpmSrmr9_L6Lfmu8JM91iqu-zEJXQ9sq7Zx2g0mDXt2vmRIqEdu8BMFRxj6aXqoOMEns12v83PsyOJ-4TLyNnpMUFZhSR6Tk-El2vNhNol20I2aJDAs8p6OOVIhVdHQWhNsPwqPZ0YlPOmcr0wqrz0d5Wb7scTc_l4LlhjA0dBj19u9ckXWExP4c1lr169RynJyQFqAejNN0_ohY3QzKhZabpMKBOWiI0lC7Cff10-jb5XJheMj_aOTgJA19LUOrxWS_dOhA      （你的令牌token串）
 ```
 
 ### 八、安装metrics-server插件。
